@@ -1,14 +1,15 @@
-// File: app.js
-
 const express = require('express');
 const mysql = require('mysql2');
 const bodyParser = require('body-parser');
 const path = require('path');
+const bcrypt = require('bcryptjs');
+const cookieParser = require('cookie-parser'); // For handling cookies
 const app = express();
 const port = 3000;
 
 // Middleware
 app.use(bodyParser.json());
+app.use(cookieParser()); // Use cookie-parser to handle cookies
 app.use(express.static(path.join(__dirname, 'public')));
 
 // MySQL connection
@@ -23,57 +24,63 @@ db.connect((err) => {
     if (err) throw err;
     console.log('Connected to MySQL Database');
 });
-// Serve HTML pages
-app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public/views/home.html'));
-});
 
-app.get('/login', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public/views/login.html'));
-});
+// Helper function to verify if user is logged in
+function isAuthenticated(req, res, next) {
+    if (req.cookies.loggedIn) {
+        next();
+    } else {
+        res.redirect('/login');
+    }
+}
 
-app.get('/register', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public/views/register.html'));
-});
-
-app.get('/enter-details', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public/views/enter-details.html'));
-});
-
-app.get('/get-details', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public/views/get-details.html'));
-});
-
-
-
-// Registration route
+// Registration route with bcrypt for password hashing
 app.post('/register', (req, res) => {
     const { name, email, password } = req.body;
-    const sql = 'INSERT INTO users (name, email, password) VALUES (?, ?, ?)';
-    db.query(sql, [name, email, password], (err, result) => {
+    // Hash the password using bcrypt
+    bcrypt.hash(password, 10, (err, hash) => {
         if (err) throw err;
-        res.send('User registered successfully');
+        const sql = 'INSERT INTO users (name, email, password) VALUES (?, ?, ?)';
+        db.query(sql, [name, email, hash], (err, result) => {
+            if (err) throw err;
+            res.send('User registered successfully');
+        });
     });
 });
 
-
-
-// Login route
+// Login route with bcrypt for password verification and cookie for session management
 app.post('/login', (req, res) => {
     const { email, password } = req.body;
-    const sql = 'SELECT * FROM users WHERE email = ? AND password = ?';
-    db.query(sql, [email, password], (err, result) => {
+    const sql = 'SELECT * FROM users WHERE email = ?';
+    db.query(sql, [email], (err, result) => {
         if (err) throw err;
         if (result.length > 0) {
-            res.send('Login successful');
+            const user = result[0];
+            // Compare the entered password with the stored hashed password
+            bcrypt.compare(password, user.password, (err, isMatch) => {
+                if (err) throw err;
+                if (isMatch) {
+                    // Set a cookie to track the session
+                    res.cookie('loggedIn', true, { httpOnly: true });
+                    res.send('Login successful');
+                } else {
+                    res.status(401).send('Invalid login credentials');
+                }
+            });
         } else {
             res.status(401).send('Invalid login credentials');
         }
     });
 });
 
-// Add a new patient
-app.post('/patients', (req, res) => {
+// Logout route to clear the cookie
+app.get('/logout', (req, res) => {
+    res.clearCookie('loggedIn');
+    res.redirect('/login');
+});
+
+// Add Patient route (requires authentication)
+app.post('/patients', isAuthenticated, (req, res) => {
     const { name, age, gender, diagnosis, treatment } = req.body;
     const sql = 'INSERT INTO patients (name, age, gender, diagnosis, treatment) VALUES (?, ?, ?, ?, ?)';
     db.query(sql, [name, age, gender, diagnosis, treatment], (err, result) => {
@@ -82,16 +89,22 @@ app.post('/patients', (req, res) => {
     });
 });
 
-// Get patient details
-app.get('/patients', (req, res) => {
-    const sql = 'SELECT * FROM patients';
-    db.query(sql, (err, result) => {
+// Get Patient Records route with Search functionality (requires authentication)
+app.get('/patients', isAuthenticated, (req, res) => {
+    const searchQuery = req.query.q || ''; // Get the search query from URL (for search bar)
+    const sql = `SELECT * FROM patients WHERE name LIKE ? OR diagnosis LIKE ?`;
+    db.query(sql, [`%${searchQuery}%`, `%${searchQuery}%`], (err, result) => {
         if (err) throw err;
         res.json(result);
     });
 });
 
+// Serve pages
+app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public/views/home.html')));
+app.get('/login', (req, res) => res.sendFile(path.join(__dirname, 'public/views/login.html')));
+app.get('/register', (req, res) => res.sendFile(path.join(__dirname, 'public/views/register.html')));
+app.get('/enter-details', isAuthenticated, (req, res) => res.sendFile(path.join(__dirname, 'public/views/enter-details.html')));
+app.get('/get-details', isAuthenticated, (req, res) => res.sendFile(path.join(__dirname, 'public/views/get-details.html')));
+
 // Start the server
-app.listen(port, () => {
-    console.log(`Server running on port ${port}`);
-});
+app.listen(port, () => console.log(`Server running on port ${port}`));
